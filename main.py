@@ -30,19 +30,20 @@ firebase_config = {
 }
 
 # Initialize Firebase SDK
-cred = credentials.Certificate('serviceAccount.json')
+cred = credentials.Certificate('./db-config/serviceAccount.json')
 firebase_admin.initialize_app(cred)
 
 db = firestore.client()
 
 app = Flask(__name__)
-bucket_name = "skinsight-skin-disease" 
+bucket_name = "xdetect-img-profile" 
+class_mapping = ["Mass", "Nodule", "Normal", "Pneumonia", "Tuberculosis"]
 
 
 def predict_image_class(image_path, model_h5_path, class_mapping):
     # Load and preprocess the input image
     image = Image.open(image_path)
-    image = image.resize((28, 28))  # Resize the image to match the expected input shape of the model
+    image = image.resize((224, 224))  # Resize the image to match the expected input shape of the model
     image = np.array(image) / 255.0  # Normalize the image pixels between 0 and 1
     image = np.expand_dims(image, axis=0)  # Add batch dimension
 
@@ -62,10 +63,13 @@ def predict_image_class(image_path, model_h5_path, class_mapping):
 
     # Perform inference
     predictions = model.predict(image)
+    print(predictions)
     predicted_class_index = np.argmax(predictions)
-    predicted_class = list(class_mapping.keys())[list(class_mapping.values()).index(predicted_class_index)]
+    predicted_class = class_mapping[predicted_class_index]
 
-    return predicted_class
+    print(predicted_class)
+
+    return predictions, predicted_class
 
 def run_image_classification(image_url, model_h5_path):
     # Download the image from the provided URL
@@ -73,16 +77,14 @@ def run_image_classification(image_url, model_h5_path):
     urllib.request.urlretrieve(image_url, image_path)
 
     # Define the class mapping
-    class_mapping = {"Actinic Keratosis": 0, "Basal Cell Carcinoma": 1, "Benign Keratosis": 2,
-                     "Dermatofibroma": 3, "Melanoma": 4, "Melanocytic nevi": 5, "Angiomas to angiokeratomas": 6}
 
     # Call the predict_image_class function
-    predicted_class = predict_image_class(image_path, model_h5_path, class_mapping)
+    predictions, predicted_class = predict_image_class(image_path, model_h5_path, class_mapping)
 
     # Remove the temporary image file
     os.remove(image_path)
 
-    return predicted_class
+    return predictions, predicted_class
         
 
 def upload_file_to_bucket(bucket_name, file_name, file):
@@ -115,13 +117,16 @@ def upload_skin_picture(uid):
 
         public_url = upload_file_to_bucket(bucket_name, file_name, file)
 
-        predicted_class = run_image_classification(public_url, 'modelv1.h5')
+        predictions, predicted_class = run_image_classification(public_url, 'modelxdetect.h5')
+        prediction_result = {}
+        for index, prediction in enumerate(predictions[0]):
+            prediction_result[class_mapping[index]] = f"{float(prediction) * 100}%"
 
         # Adjust timestamp to client's time zone
         client_timezone = pytz.timezone('Asia/Jakarta')  # Replace with the appropriate time zone
         client_timestamp = datetime.datetime.now(client_timezone)
 
-        doc_ref = db.collection('users').document(uid)
+        doc_ref = db.collection('users2').document(uid)
         doc_ref.update({
             'history': firestore.ArrayUnion([{
                 'type' : 'Skin Disease Detection',
@@ -136,7 +141,8 @@ def upload_skin_picture(uid):
             'status': 'Success',
             'message': 'Deteksi penyakit berhasil',
             'detection_img': public_url,
-            'class' : predicted_class
+            'class' : predicted_class,
+            'predictions': prediction_result
         })
         response.status_code = 200
         return response
@@ -156,7 +162,7 @@ def upload_skin_picture(uid):
 def get_skin_picture_history(uid):
     try:
         # Retrieve the user document
-        doc_ref = db.collection('users').document(uid)
+        doc_ref = db.collection('users2').document(uid)
         doc = doc_ref.get()
 
         if doc.exists:
@@ -202,6 +208,6 @@ def get_skin_picture_history(uid):
         return response
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8080)
+    app.run(debug=True, host='0.0.0.0', port=8090)
 
 
